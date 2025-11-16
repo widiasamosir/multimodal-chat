@@ -24,12 +24,14 @@ out/
 .env
 .env.local
 
-# Uploads
 uploads/
 *.pdf
 *.png
 *.jpg
 *.jpeg
+
+# Include screenshots folder
+!screenshots/
 
 # Database
 *.db
