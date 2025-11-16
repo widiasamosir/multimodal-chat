@@ -20,7 +20,10 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
-    
+    LLM_PROVIDER: [str] = "groq"
+    GROQ_API_KEY: Optional[str] =None
+    GROQ_EMBEDDING_MODEL: str = "Qwen/Qwen3-Embedding-8B"
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
     # Upload Settings
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50 MB

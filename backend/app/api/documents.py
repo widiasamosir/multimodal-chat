@@ -1,19 +1,31 @@
 """
 Document management API endpoints
 """
+import asyncio
+
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
-from typing import List
-from app.db.session import get_db
+from app.db.session import get_db, get_db_sync
 from app.models.document import Document
 from app.services.document_processor import DocumentProcessor
 from app.core.config import settings
 import os
 import uuid
-from datetime import datetime
 
 router = APIRouter()
 
+async def process_document_task(document_id: int, file_path: str, db_factory):
+    """
+    Background task for processing a document asynchronously.
+    """
+    db = db_factory()
+    processor = DocumentProcessor(db)
+    try:
+        await processor.process_document(file_path=file_path, document_id=document_id)
+    except Exception as e:
+        await processor._update_document_status(document_id, "error", str(e))
+    finally:
+        db.close()
 
 @router.post("/upload")
 async def upload_document(
@@ -57,10 +69,13 @@ async def upload_document(
     db.add(document)
     db.commit()
     db.refresh(document)
-    
-    # TODO: Trigger background processing
-    # background_tasks.add_task(process_document_task, document.id, file_path, db)
-    # For now, you can process synchronously or implement Celery
+
+    # Trigger async background processing
+    if background_tasks:
+        background_tasks.add_task(process_document_task, document.id, file_path, get_db_sync)
+    else:
+        # fallback: process synchronously
+        asyncio.create_task(process_document_task(document.id, file_path, get_db_sync))
     
     return {
         "id": document.id,
@@ -159,7 +174,7 @@ async def delete_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    # Delete physical files
+    # Delete physical files (document, images, and tables)
     if os.path.exists(document.file_path):
         os.remove(document.file_path)
     
@@ -171,7 +186,6 @@ async def delete_document(
         if os.path.exists(tbl.image_path):
             os.remove(tbl.image_path)
     
-    # Delete database record (cascade will handle related records)
     db.delete(document)
     db.commit()
     

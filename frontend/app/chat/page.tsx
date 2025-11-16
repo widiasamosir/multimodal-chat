@@ -3,7 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import Image from "next/image";
-
+import remarkGfm from "remark-gfm";
+import ReactMarkdown from "react-markdown";
 interface Message {
   id: number;
   role: string;
@@ -123,7 +124,26 @@ export default function ChatPage() {
                       : 'bg-gray-100 text-gray-900'
                   }`}
                 >
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
+                  <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                          a: ({ node, ...props }) => (
+                              <a
+                                  {...props}
+                                  style={{
+                                      color: "#1976d2",
+                                      textDecoration: "underline",
+                                  }}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                              >
+                                  {props.children}
+                              </a>
+                          ),
+                      }}
+                  >
+                      {msg.content}
+                  </ReactMarkdown>
                   
                   {/* Display sources (images, tables, text) */}
                   {msg.sources && msg.sources.length > 0 && (

@@ -15,6 +15,24 @@ from app.services.vector_store import VectorStore
 from app.core.config import settings
 import time
 
+LLM_PROVIDER = getattr(settings, "LLM_PROVIDER", "groq").lower()
+
+OpenAI = None
+GroqClient = None
+
+if LLM_PROVIDER == "openai":
+    try:
+        from openai import OpenAI as _OpenAI
+        OpenAI = _OpenAI
+    except Exception:
+        OpenAI = None
+
+elif LLM_PROVIDER == "groq":
+    try:
+        from groq import Groq as _Groq
+        GroqClient = _Groq(api_key=getattr(settings, "GROQ_API_KEY", None))
+    except Exception:
+        GroqClient = None
 
 class ChatEngine:
     """
@@ -26,153 +44,117 @@ class ChatEngine:
     def __init__(self, db: Session):
         self.db = db
         self.vector_store = VectorStore(db)
-        self.llm = None  # TODO: Initialize LLM (OpenAI, Ollama, etc.)
-    
+        self.llm = None
+        if LLM_PROVIDER == "openai" and OpenAI is not None:
+            try:
+                self.llm = OpenAI(api_key=getattr(settings, "OPENAI_API_KEY", None))
+            except Exception:
+                self.llm = None
+        elif LLM_PROVIDER == "groq":
+            self.llm = GroqClient
+
     async def process_message(
         self,
         conversation_id: int,
         message: str,
         document_id: Optional[int] = None
     ) -> Dict[str, Any]:
-        """
-        Process a chat message and generate multimodal response.
-        
-        Implementation steps:
-        1. Load conversation history (for multi-turn support)
-        2. Search vector store for relevant context
-        3. Find related images and tables
-        4. Build prompt with context and history
-        5. Generate response using LLM
-        6. Format response with sources (text, images, tables)
-        
-        Args:
-            conversation_id: Conversation ID
-            message: User message
-            document_id: Optional document ID to scope search
-            
-        Returns:
-            {
-                "answer": "...",
-                "sources": [
-                    {
-                        "type": "text",
-                        "content": "...",
-                        "page": 3,
-                        "score": 0.95
-                    },
-                    {
-                        "type": "image",
-                        "url": "/uploads/images/xxx.png",
-                        "caption": "Figure 1: ...",
-                        "page": 3
-                    },
-                    {
-                        "type": "table",
-                        "url": "/uploads/tables/yyy.png",
-                        "caption": "Table 1: ...",
-                        "page": 5,
-                        "data": {...}  # structured table data
-                    }
-                ],
-                "processing_time": 2.5
-            }
-        """
-        # TODO: Implement message processing
-        # 
-        # Example LLM usage with OpenAI:
-        # from openai import OpenAI
-        # client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        # 
-        # response = client.chat.completions.create(
-        #     model=settings.OPENAI_MODEL,
-        #     messages=[
-        #         {"role": "system", "content": system_prompt},
-        #         {"role": "user", "content": user_prompt}
-        #     ]
-        # )
-        # 
-        # Example with LangChain:
-        # from langchain_openai import ChatOpenAI
-        # from langchain.prompts import ChatPromptTemplate
-        # 
-        # llm = ChatOpenAI(model=settings.OPENAI_MODEL)
-        # prompt = ChatPromptTemplate.from_messages([...])
-        # chain = prompt | llm
-        # response = chain.invoke({...})
-        
-        raise NotImplementedError("Message processing not implemented yet")
-    
+        start_time = time.time()
+        history = await self._load_conversation_history(conversation_id)
+        context_chunks = await self._search_context(message, document_id=document_id)
+        media = await self._find_related_media(context_chunks)
+        answer = await self._generate_response(message, context_chunks, history, media)
+        user_msg = Message(conversation_id=conversation_id, role="user", content=message)
+        bot_msg = Message(conversation_id=conversation_id, role="assistant", content=answer)
+        self.db.add_all([user_msg, bot_msg])
+        self.db.commit()
+        sources = self._format_sources(context_chunks, media)
+        processing_time = round(time.time() - start_time, 2)
+        return {
+            "answer": answer,
+            "sources": sources,
+            "processing_time": processing_time,
+        }
+
     async def _load_conversation_history(
         self,
         conversation_id: int,
         limit: int = 5
     ) -> List[Dict[str, str]]:
-        """
-        Load recent conversation history.
-        
-        TODO: Implement conversation history loading
-        - Load last N messages from conversation
-        - Format for LLM context
-        - Include both user and assistant messages
-        
-        Returns:
-            [
-                {"role": "user", "content": "..."},
-                {"role": "assistant", "content": "..."},
-                ...
-            ]
-        """
-        raise NotImplementedError("History loading not implemented yet")
-    
+        messages = (
+            self.db.query(Message)
+            .filter(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        history = [
+            {"role": msg.role, "content": msg.content}
+            for msg in reversed(messages)
+        ]
+        return history
+
     async def _search_context(
         self,
         query: str,
         document_id: Optional[int] = None,
         k: int = 5
     ) -> List[Dict[str, Any]]:
-        """
-        Search for relevant context using vector store.
-        
-        TODO: Implement context search
-        - Use vector store similarity search
-        - Filter by document if specified
-        - Return relevant chunks with metadata
-        """
-        raise NotImplementedError("Context search not implemented yet")
-    
+        results = await self.vector_store.similarity_search(query=query, k=k, document_id=document_id)
+        print("resuls", results)
+        context_chunks = []
+
+        for r in results:
+            metadata_chunk = r.get("metadata_chunk", {}) or {}
+            context_chunks.append({
+                "content": r.get("content"),
+                "page_number": metadata_chunk.get("page_number"),
+                "score": r.get("score", 0.0),
+                "metadata_chunk": metadata_chunk,
+                "related_images": metadata_chunk.get("related_images", []),
+                "related_tables": metadata_chunk.get("related_tables", []),
+            })
+
+        return context_chunks
+
     async def _find_related_media(
-        self,
-        context_chunks: List[Dict[str, Any]]
+            self,
+            context_chunks: List[Dict[str, Any]]
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Find related images and tables from context chunks.
-        
-        TODO: Implement related media finding
-        - Extract image/table references from chunk metadata
-        - Query database for actual image/table records
-        - Return with URLs for frontend display
-        
-        Returns:
-            {
-                "images": [
-                    {
-                        "url": "/uploads/images/xxx.png",
-                        "caption": "...",
-                        "page": 3
-                    }
-                ],
-                "tables": [
-                    {
-                        "url": "/uploads/tables/yyy.png",
-                        "caption": "...",
-                        "page": 5,
-                        "data": {...}
-                    }
-                ]
-            }
+        Collect related images and tables from context chunks, ensuring uniqueness.
         """
-        raise NotImplementedError("Related media finding not implemented yet")
-    
+        images, tables = [], []
+        seen_images = set()
+        seen_tables = set()
+
+        for chunk in context_chunks:
+            meta = chunk.get("metadata_chunk", {})
+
+            for img in meta.get("related_images", []):
+                url = img.get("url")
+                if url and url not in seen_images:
+                    images.append({
+                        "url": url,
+                        "caption": img.get("caption"),
+                        "page": img.get("page_number") or chunk.get("page_number")
+                    })
+                    seen_images.add(url)
+
+            for tbl in meta.get("related_tables", []):
+                url = tbl.get("url")
+                if url and url not in seen_tables:
+                    tables.append({
+                        "url": url,
+                        "caption": tbl.get("caption"),
+                        "page": tbl.get("page_number") or chunk.get("page_number"),
+                        "data": tbl.get("data", {})
+                    })
+                    seen_tables.add(url)
+
+        return {"images": images, "tables": tables}
+
     async def _generate_response(
         self,
         message: str,
@@ -181,25 +163,73 @@ class ChatEngine:
         media: Dict[str, List[Dict[str, Any]]]
     ) -> str:
         """
-        Generate response using LLM.
-        
-        TODO: Implement LLM response generation
-        - Build comprehensive prompt with:
-          - System instructions
-          - Conversation history
-          - Retrieved context
-          - Available images/tables
-        - Call LLM API
-        - Return generated answer
-        
-        Prompt engineering tips:
-        - Instruct LLM to reference images/tables when relevant
-        - Include context from previous messages
-        - Ask LLM to cite sources
-        - Format for good UX (bullet points, etc.)
+        Generate response using configured LLM provider.
+        Falls back to a deterministic reply if no LLM client is available.
         """
-        raise NotImplementedError("Response generation not implemented yet")
-    
+        system_prompt = (
+            "You are a helpful assistant with access to contextual documents. "
+            "Use the provided text, images, and tables to answer clearly and accurately. "
+            "Cite relevant pages, figures, or tables when appropriate. "
+            "Do not mention any limitations about missing images or diagrams. "
+            "If an image or figure is referenced, describe it using the provided context or infer its content based on surrounding information."
+        )
+
+        context_text = "\n\n".join([f"[p{c.get('page') or c.get('page_number')}] {c['content']}" for c in context[:5]])
+        media_summary = ""
+        if media:
+            images = media.get("images", [])
+            tables = media.get("tables", [])
+            media_lines = []
+            if images:
+                media_lines.append(
+                    "Images are available in the context. Example captions or references: " +
+                    ", ".join([img.get("caption", f"Image {i + 1}") for i, img in enumerate(images)])
+                )
+            if tables:
+                media_lines.append(
+                    "Tables are available in the context. Example titles or references: " +
+                    ", ".join([tbl.get("caption", f"Table {i + 1}") for i, tbl in enumerate(tables)])
+                )
+            media_summary = "\n".join(media_lines)
+
+        chat_messages = [{"role": "system", "content": system_prompt}] + history
+        chat_messages.append({"role": "user", "content": f"{message}\n\nContext:\n{context_text}\n\n{media_summary}"})
+
+        if LLM_PROVIDER == "openai" and self.llm is not None:
+            try:
+                model = getattr(settings, "OPENAI_MODEL", "gpt-4o-mini")  # fallback
+                response = self.llm.chat.completions.create(
+                    model=model,
+                    messages=chat_messages,
+                    temperature=getattr(settings, "OPENAI_TEMPERATURE", 0.2),
+                )
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                print(f"[ChatEngine] OpenAI chat failed: {e}")
+
+        if LLM_PROVIDER == "groq" and self.llm is not None:
+            try:
+                model = getattr(settings, "GROQ_MODEL", None) or "llama-3.3-70b-versatile"
+                response = self.llm.chat.completions.create(
+                    model=model,
+                    messages=chat_messages,
+                    temperature=getattr(settings, "GROQ_TEMPERATURE", 0.2),
+                )
+                if hasattr(response, "choices") and len(response.choices) > 0:
+                    return getattr(response.choices[0].message, "content", str(response.choices[0])).strip()
+                return str(response).strip()
+            except Exception as e:
+                print(f"[ChatEngine] Groq chat failed: {e}")
+
+        # --- Fallback: automatic reply when no LLM client available ---
+        summary = context_text[:1000]  # cap length
+        fallback = (
+            "I couldn't reach the configured LLM provider. "
+            "Here's a short summary of the most relevant context I found:\n\n"
+            f"{summary}\n\n"
+        )
+        return fallback
+
     def _format_sources(
         self,
         context: List[Dict[str, Any]],
@@ -211,7 +241,7 @@ class ChatEngine:
         This is implemented as an example.
         """
         sources = []
-        
+
         # Add text sources
         for chunk in context[:3]:  # Top 3 text chunks
             sources.append({

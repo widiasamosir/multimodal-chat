@@ -1,6 +1,7 @@
 """
 Chat API endpoints
 """
+import time
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -33,7 +34,7 @@ async def send_message(
 ) -> ChatResponse:
     """
     Send a chat message and get a response
-    
+
     This endpoint:
     1. Creates or retrieves conversation
     2. Saves user message
@@ -41,7 +42,8 @@ async def send_message(
     4. Saves assistant response
     5. Returns answer with sources (text, images, tables)
     """
-    # Create or get conversation
+    start_time = time.time()
+
     if request.conversation_id:
         conversation = db.query(Conversation).filter(
             Conversation.id == request.conversation_id
@@ -50,14 +52,13 @@ async def send_message(
             raise HTTPException(status_code=404, detail="Conversation not found")
     else:
         conversation = Conversation(
-            title=request.message[:50],  # First 50 chars as title
+            title=request.message[:50],
             document_id=request.document_id
         )
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
-    
-    # Save user message
+
     user_message = Message(
         conversation_id=conversation.id,
         role="user",
@@ -65,27 +66,23 @@ async def send_message(
     )
     db.add(user_message)
     db.commit()
-    
-    # TODO: Process message with ChatEngine
-    # chat_engine = ChatEngine(db)
-    # result = await chat_engine.process_message(
-    #     conversation_id=conversation.id,
-    #     message=request.message,
-    #     document_id=request.document_id
-    # )
-    
-    # For now, return placeholder response
-    result = {
-        "answer": "This is a placeholder response. Implement ChatEngine to process messages.",
-        "sources": [],
-        "processing_time": 0.0
-    }
-    
-    # Save assistant message
+
+    chat_engine = ChatEngine(db)
+    try:
+        result = await chat_engine.process_message(
+            conversation_id=conversation.id,
+            message=request.message,
+            document_id=request.document_id
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ChatEngine error: {e}")
+
+    processing_time = result.get("processing_time", time.time() - start_time)
+
     assistant_message = Message(
         conversation_id=conversation.id,
         role="assistant",
-        content=result["answer"],
+        content=result.get("answer", "No response generated."),
         sources=result.get("sources", [])
     )
     db.add(assistant_message)
@@ -95,9 +92,9 @@ async def send_message(
     return ChatResponse(
         conversation_id=conversation.id,
         message_id=assistant_message.id,
-        answer=result["answer"],
+        answer=result.get("answer", ""),
         sources=result.get("sources", []),
-        processing_time=result.get("processing_time", 0.0)
+        processing_time=processing_time
     )
 
 
