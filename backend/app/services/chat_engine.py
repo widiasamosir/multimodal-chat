@@ -102,7 +102,6 @@ class ChatEngine:
         k: int = 5
     ) -> List[Dict[str, Any]]:
         results = await self.vector_store.similarity_search(query=query, k=k, document_id=document_id)
-        print("resuls", results)
         context_chunks = []
 
         for r in results:
