@@ -2,16 +2,9 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
-import Image from "next/image";
 import remarkGfm from "remark-gfm";
 import ReactMarkdown from "react-markdown";
-interface Message {
-  id: number;
-  role: string;
-  content: string;
-  sources?: any[];
-  created_at: string;
-}
+import Message from "@/app/dtos/documentDtos";
 
 export default function ChatPage() {
   const searchParams = useSearchParams();
